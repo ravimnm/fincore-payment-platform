@@ -259,6 +259,7 @@ token = <auto-set>
 
 Ravi Sankar Manem
 
+GitHub: https://github.com/ravimnm
 ---
 
 ## ⭐ Summary
@@ -272,3 +273,11 @@ This project demonstrates:
 * Production-style error handling
 
 ---
+## Audit & Security Integration
+
+This application integrates with the following security components:
+
+| Component | Purpose |
+|-----------|---------|
+| [SMTAP](https://github.com/ravimnm/audit-compliance-platform) | Centralized audit logging, integrity verification, and compliance backend |
+| [JRSA](https://github.com/ravimnm/java-runtime-security-agent) | Runtime JVM security monitoring and telemetry generation |
