@@ -257,9 +257,9 @@ token = <auto-set>
 
 ## 👨‍💻 Author
 
-Ravi Sankar Manem
+**Ravi Sankar Manem**
 
-###GitHub: https://github.com/ravimnm
+GitHub: https://github.com/ravimnm
 ---
 
 ## ⭐ Summary
