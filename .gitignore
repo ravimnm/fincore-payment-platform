@@ -1,4 +1,20 @@
-application.properties
+# Environment variables
 .env
+.env.*
+!.env.example
+
+# Build output
 target/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Logs
 *.log
+
+# OS
+.DS_Store
+Thumbs.db
