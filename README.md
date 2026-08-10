@@ -658,38 +658,45 @@ Example response:
 Current implementation is intended as a lightweight application-level protection mechanism for the development system.
 
 For production deployment, this would be replaced or supplemented by a distributed rate limiter such as Redis or an API gateway.
-
 ---
-
 # Performance Benchmarks
 
-FinCore was load-tested using **Grafana k6** against the payment API on a local development environment.
+FinCore was load-tested using **Grafana k6** against the authenticated payment-processing API on a local development environment.
 
-The workload generated authenticated payment requests against the transaction-processing path.
+The benchmark used **25 dedicated authenticated load-test users and wallets**, with each request authenticated using the corresponding user's JWT. Concurrent wallet-to-wallet transfers exercised the transaction-processing path, including idempotency validation, pessimistic wallet locking, balance updates, payment persistence, and ledger creation.
 
-## Load Test Results
+## 1000-VU Payment Load Test
 
-|     Load |  Duration |  Throughput | Avg Latency | P95 Latency | HTTP Failures |
-| -------: | --------: | ----------: | ----------: | ----------: | ------------: |
-|  100 VUs |       30s | 158.6 req/s |    519.9 ms |      1.70 s |            0% |
-|  300 VUs |       30s | 189.2 req/s |      1.44 s |      2.17 s |            0% |
-|  500 VUs |       30s | 188.4 req/s |      2.42 s |      3.23 s |            0% |
-| 1000 VUs | 3m staged | 201.2 req/s |      2.54 s |      4.85 s |            0% |
+| Metric | Result |
+|---|---:|
+| Maximum Concurrent VUs | **1,000** |
+| Authenticated Load-Test Users | **25** |
+| Total Requests | **50,682** |
+| Successful Requests | **50,682 (100%)** |
+| Failed Requests | **0 (0%)** |
+| Throughput | **281.56 req/s** |
+| Average Latency | **1.74 s** |
+| Median Latency | **1.26 s** |
+| P90 Latency | **3.83 s** |
+| P95 Latency | **5.59 s** |
+| Maximum Latency | **16.88 s** |
 
-### 1000-VU Test
+### Load Profile
 
-The staged 1000-VU workload completed:
+The benchmark progressively increased concurrency:
 
 ```text
-36,229 requests
-201.2 requests/sec
-0% HTTP failures
-4.85 sec p95 latency
-8.05 sec maximum latency
-```
-
-The workload progressively increased concurrency before ramping back down.
-
+100 VUs
+   ↓
+350 VUs
+   ↓
+700 VUs
+   ↓
+1000 VUs
+   ↓
+1000 VUs sustained
+   ↓
+0 VUs
 ---
 
 ## Performance Observations
