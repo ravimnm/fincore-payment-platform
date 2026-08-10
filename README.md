@@ -659,6 +659,7 @@ Current implementation is intended as a lightweight application-level protection
 
 For production deployment, this would be replaced or supplemented by a distributed rate limiter such as Redis or an API gateway.
 ---
+
 # Performance Benchmarks
 
 FinCore was load-tested using **Grafana k6** against the authenticated payment-processing API on a local development environment.
