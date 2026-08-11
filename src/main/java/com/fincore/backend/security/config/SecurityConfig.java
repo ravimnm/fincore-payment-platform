@@ -10,14 +10,18 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import com.fincore.backend.security.filter.JwtFilter;
+import com.fincore.backend.security.oauth2.OAuth2LoginSuccessHandler;
 
 @Configuration
 public class SecurityConfig {
 
     private final JwtFilter jwtFilter;
+    private final OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler;
 
-    public SecurityConfig(JwtFilter jwtFilter) {
+    public SecurityConfig(JwtFilter jwtFilter, OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler) {
         this.jwtFilter = jwtFilter;
+        this.oAuth2LoginSuccessHandler = oAuth2LoginSuccessHandler;
+
     }
 
     @Bean
@@ -45,6 +49,12 @@ public class SecurityConfig {
                     "/auth/register",
                     "/auth/login"
                 ).permitAll()
+                                   
+                // OAuth2 endpoints
+                .requestMatchers(
+                    "/oauth2/**",
+                    "/login/oauth2/**"
+                ).permitAll()
 
                 // Super Admin
                 .requestMatchers("/admin/**")
@@ -68,6 +78,11 @@ public class SecurityConfig {
                 // Everything else
                 .anyRequest()
                 .authenticated()
+            )
+            
+            .oauth2Login(oauth2 ->
+                oauth2
+                    .successHandler(oAuth2LoginSuccessHandler)
             )
 
             .addFilterBefore(
