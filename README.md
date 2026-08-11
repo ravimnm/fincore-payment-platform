@@ -15,7 +15,8 @@ FinCore uses PostgreSQL for transactional persistence, JWT-based authentication,
 ### Authentication & Authorization
 
 * User registration
-* User login
+* Username/password login
+* Google OAuth 2.0 / OpenID Connect login
 * BCrypt password hashing
 * JWT authentication
 * JWT role claims
@@ -219,13 +220,15 @@ FinCore follows a layered Spring Boot architecture.
                          └──────────┬───────────┘
                                     │
                                     ▼
-                         ┌──────────────────────┐
-                         │    Spring Security   │
-                         │      JWT Filter      │
-                         │     RBAC / Auth      │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
+                         ┌─────────────────────────────┐
+                         │      Spring Security        │
+                         │                             │
+                         │ JWT Filter                  │
+                         │ OAuth2 / OIDC Login         │
+                         │ RBAC / Authorization        │
+                         └──────────────┬──────────────┘
+                                        │
+                                        ▼
                      ┌─────────────────────────────┐
                      │        REST Controllers      │
                      │                             │
@@ -376,6 +379,74 @@ Authorization: Bearer <JWT>
 
 ---
 
+## OAuth 2.0 / OpenID Connect
+
+FinCore also supports Google OAuth 2.0 / OpenID Connect authentication through Spring Security.
+
+The OAuth2 login flow is:
+
+```text
+Client
+   ↓
+/oauth2/authorization/google
+   ↓
+Google Authorization Server
+   ↓
+User Authentication
+   ↓
+/login/oauth2/code/google
+   ↓
+OAuth2LoginSuccessHandler
+   ↓
+Find or create local FinCore user
+   ↓
+Assign ROLE_USER
+   ↓
+Generate FinCore JWT
+   ↓
+Authenticated API access
+```
+
+Google is responsible for authenticating the user's identity, while FinCore maintains its own application user, roles, and JWT-based API authorization.
+
+OAuth2-authenticated users are mapped to the local `User` entity using their verified email address.
+
+Existing username/password authentication remains supported alongside OAuth2.
+
+### OAuth2 Configuration
+
+Google OAuth2 credentials are provided through environment variables:
+
+```text
+GOOGLE_CLIENT_ID=<google-client-id>
+GOOGLE_CLIENT_SECRET=<google-client-secret>
+```
+
+The OAuth2 callback endpoint is:
+
+```text
+http://localhost:8080/login/oauth2/code/google
+```
+
+OAuth2 authorization is initiated through:
+
+```text
+GET /oauth2/authorization/google
+```
+
+After successful OAuth2 authentication, FinCore generates its own JWT so that the same JWT-based authorization model can protect:
+
+```text
+/wallet/**
+/payments/**
+/ledger/**
+/admin/**
+```
+
+OAuth2 client credentials and secrets are not committed to the repository.
+
+---
+
 ## Password Security
 
 Passwords are never stored in plaintext.
@@ -416,6 +487,8 @@ Authentication endpoints remain publicly accessible:
 ```text
 /auth/register
 /auth/login
+/oauth2/authorization/google
+/login/oauth2/code/google
 ```
 
 ---
@@ -477,6 +550,33 @@ Response:
     ]
 }
 ```
+
+---
+
+### Google OAuth2 Login
+
+OAuth2 login is initiated through:
+
+```http
+GET /oauth2/authorization/google
+```
+
+The user is redirected to Google for authentication.
+
+After successful authentication, Spring Security processes the OAuth2 callback:
+
+```http
+GET /login/oauth2/code/google
+```
+
+FinCore then:
+
+1. Retrieves the authenticated Google identity.
+2. Finds the corresponding local user by email.
+3. Creates the user if no matching account exists.
+4. Assigns `ROLE_USER` to newly created OAuth2 users.
+5. Generates a FinCore JWT.
+6. Uses the same JWT-based authorization model for protected APIs.
 
 ---
 
@@ -658,6 +758,7 @@ Example response:
 Current implementation is intended as a lightweight application-level protection mechanism for the development system.
 
 For production deployment, this would be replaced or supplemented by a distributed rate limiter such as Redis or an API gateway.
+
 ---
 
 # Performance Benchmarks
@@ -698,6 +799,8 @@ The benchmark progressively increased concurrency:
 1000 VUs sustained
    ↓
 0 VUs
+```
+
 ---
 
 ## Performance Observations
@@ -780,6 +883,8 @@ The benchmark validates:
 * Java 21
 * Spring Boot 4.0.4
 * Spring Security
+* Spring Security OAuth2 Client
+* OAuth 2.0 / OpenID Connect
 * Spring Data JPA
 * Hibernate ORM
 * Jakarta Persistence
@@ -1079,6 +1184,9 @@ DB_USERNAME=postgres
 DB_PASSWORD=<your-password>
 
 JWT_SECRET=<long-random-secret>
+
+GOOGLE_CLIENT_ID=<google-client-id>
+GOOGLE_CLIENT_SECRET=<google-client-secret>
 ```
 
 Do not commit `.env` or production credentials to GitHub.
@@ -1109,7 +1217,9 @@ http://localhost:8080
 
 # Basic Workflow
 
-The application can be tested in the following order.
+FinCore supports both local JWT authentication and Google OAuth2 authentication.
+
+### Local Authentication
 
 ```text
 1. Register user
@@ -1133,6 +1243,28 @@ The application can be tested in the following order.
 10. Verify ledger
 ```
 
+### OAuth2 Authentication
+
+```text
+1. Start Google OAuth2 login
+       ↓
+2. Authenticate with Google
+       ↓
+3. OAuth2 callback
+       ↓
+4. Find or create FinCore user
+       ↓
+5. Receive FinCore JWT
+       ↓
+6. Create/access wallet
+       ↓
+7. Transfer money
+       ↓
+8. Verify payment
+       ↓
+9. Verify ledger
+```
+
 ---
 
 # Example API Workflow
@@ -1143,10 +1275,18 @@ The application can be tested in the following order.
 POST /auth/register
 ```
 
-### 2. Login
+### 2.1 - Login
 
 ```http
 POST /auth/login
+```
+
+### 2.2 - Google OAuth2 Login
+
+OAuth2 login is initiated through:
+
+```http
+GET /oauth2/authorization/google
 ```
 
 Copy the returned JWT.
@@ -1256,6 +1396,7 @@ Potential production-oriented improvements include:
 * Scheduled settlement workflows
 * Multi-currency wallets
 * Webhook/event notification system
+* Additional OAuth2 providers (GitHub, Microsoft)
 
 ---
 
@@ -1267,6 +1408,10 @@ The project focuses on:
 
 ```text
 Authentication
+      +
+OAuth2 / OIDC
+      +
+JWT
       +
 Authorization
       +
