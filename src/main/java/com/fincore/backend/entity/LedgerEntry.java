@@ -30,11 +30,12 @@ public class LedgerEntry {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(
-        name = "payment_id",
-        nullable = false
-    )
+    @JoinColumn(name = "payment_id")
     private Payment payment;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "gateway_transaction_id")
+    private com.fincore.backend.gateway.GatewayTransaction gatewayTransaction;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(
@@ -125,6 +126,16 @@ public class LedgerEntry {
         this.payment = payment;
     }
 
+    public com.fincore.backend.gateway.GatewayTransaction getGatewayTransaction() {
+        return gatewayTransaction;
+    }
+
+    public void setGatewayTransaction(
+            com.fincore.backend.gateway.GatewayTransaction gatewayTransaction) {
+
+        this.gatewayTransaction = gatewayTransaction;
+    }
+    
     public Wallet getWallet() {
         return wallet;
     }

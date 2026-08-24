@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>FinCore Razorpay Payment</title>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 500px;
+            margin: 80px auto;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 8px 0;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            margin-top: 15px;
+            cursor: pointer;
+        }
+
+        #result {
+            margin-top: 20px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>FinCore Payment</h2>
+
+<label>Wallet ID</label>
+<input id="walletId" value="3">
+
+<label>Amount</label>
+<input id="amount" value="1000">
+
+<label>JWT</label>
+<input id="token" placeholder="Paste JWT">
+
+<button onclick="createOrder()">
+    Pay with Razorpay
+</button>
+
+<div id="result"></div>
+
+<script>
+
+async function createOrder() {
+
+    const walletId =
+        Number(document.getElementById("walletId").value);
+
+    const amount =
+        Number(document.getElementById("amount").value);
+
+    const token =
+        document.getElementById("token").value;
+
+    const idempotencyKey =
+        "rzp-" + Date.now();
+
+    const response =
+        await fetch(
+            "/gateway/razorpay/orders",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + token
+                },
+
+                body: JSON.stringify({
+                    walletId: walletId,
+                    amount: amount,
+                    currency: "INR",
+                    idempotencyKey: idempotencyKey,
+                    description: "FinCore wallet funding"
+                })
+            }
+        );
+
+    if (!response.ok) {
+
+        const error = await response.text();
+
+        document.getElementById("result").textContent =
+            error;
+
+        return;
+    }
+
+    const order = await response.json();
+
+    openCheckout(order, token);
+}
+
+function openCheckout(order, token) {
+
+    const options = {
+
+        key: "rzp_test_TTGioOSzlq2wWr",
+
+        amount: order.amountInPaise,
+
+        currency: order.currency,
+
+        name: "FinCore",
+
+        description: "Wallet Funding",
+
+        order_id: order.orderId,
+
+        handler: async function(response) {
+
+            document.getElementById("result").textContent =
+                "Payment successful. Verifying...";
+
+            const verifyResponse =
+                await fetch(
+                    "/gateway/razorpay/verify",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization":
+                                "Bearer " + token
+                        },
+
+                        body: JSON.stringify({
+
+                            razorpayOrderId:
+                                response.razorpay_order_id,
+
+                            razorpayPaymentId:
+                                response.razorpay_payment_id,
+
+                            razorpaySignature:
+                                response.razorpay_signature
+                        })
+                    }
+                );
+
+            const result =
+                await verifyResponse.text();
+
+            document.getElementById("result").textContent =
+                result;
+        }
+    };
+
+    const razorpay =
+        new Razorpay(options);
+
+    razorpay.open();
+}
+
+</script>
+
+</body>
+</html>

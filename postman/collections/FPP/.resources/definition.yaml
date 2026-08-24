@@ -1,0 +1,6 @@
+$kind: collection
+name: FPP
+variables:
+  - key: json_web_token_17t5
+    secret: true
+    disabled: false

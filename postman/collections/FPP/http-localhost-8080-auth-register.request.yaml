@@ -1,0 +1,23 @@
+$kind: http-request
+name: http://localhost:8080/auth/register
+description: ""
+url: http://localhost:8080/auth/register
+method: POST
+body:
+  type: json
+  content: "{\r
+
+    \    \"firstName\": \"Ramana\",\r
+
+    \    \"lastName\": \"Gadu\",\r
+
+    \    \"username\": \"ramanagadu\",\r
+
+    \    \"email\": \"ramanagadu.test@fincore.com\",\r
+
+    \    \"phone\": \"9768902992\",\r
+
+    \    \"password\": \"password\"\r
+
+    }"
+order: 1975411415534125

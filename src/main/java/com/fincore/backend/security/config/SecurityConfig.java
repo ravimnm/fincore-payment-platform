@@ -47,7 +47,8 @@ public class SecurityConfig {
                 // Authentication
                 .requestMatchers(
                     "/auth/register",
-                    "/auth/login"
+                    "/auth/login",
+                    "/razorpay.html"
                 ).permitAll()
                                    
                 // OAuth2 endpoints
@@ -69,6 +70,10 @@ public class SecurityConfig {
 
                 // Payment operations
                 .requestMatchers("/payments/**")
+                .authenticated()
+                
+                // Razorpay test gateway
+                .requestMatchers("/gateway/razorpay/**")
                 .authenticated()
 
                 // Ledger
