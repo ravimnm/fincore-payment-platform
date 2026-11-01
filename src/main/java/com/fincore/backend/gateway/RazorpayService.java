@@ -1,3 +1,4 @@
+
 package com.fincore.backend.gateway;
 
 import java.math.BigDecimal;
@@ -24,7 +25,7 @@ public class RazorpayService {
     private final WalletService walletService;
     private final GatewayTransactionRepository gatewayTransactionRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
-    
+
     public RazorpayService(
             RazorpayClient razorpayClient,
             WalletService walletService,
@@ -42,29 +43,28 @@ public class RazorpayService {
     @Transactional
     public GatewayOrderResponse createOrder(
             GatewayOrderRequest request) {
-    	
-    	GatewayTransaction existing =
-    	        gatewayTransactionRepository
-    	                .findByIdempotencyKey(
-    	                        request.getIdempotencyKey()
-    	                )
-    	                .orElse(null);
 
-    	if (existing != null) {
+        GatewayTransaction existing =
+                gatewayTransactionRepository
+                        .findByIdempotencyKey(
+                                request.getIdempotencyKey()
+                        )
+                        .orElse(null);
 
-    	    return new GatewayOrderResponse(
-    	            existing.getGateway(),
-    	            existing.getGatewayOrderId(),
-    	            existing.getWallet().getId(),
-    	            existing.getAmount(),
-    	            existing.getAmount()
-    	                    .multiply(BigDecimal.valueOf(100))
-    	                    .longValueExact(),
-    	            existing.getCurrency(),
-    	            existing.getStatus().toLowerCase(),
-    	            existing.getIdempotencyKey()
-    	    );
-    	}
+        if (existing != null) {
+            return new GatewayOrderResponse(
+                    existing.getGateway(),
+                    existing.getGatewayOrderId(),
+                    existing.getWallet().getId(),
+                    existing.getAmount(),
+                    existing.getAmount()
+                            .multiply(BigDecimal.valueOf(100))
+                            .longValueExact(),
+                    existing.getCurrency(),
+                    existing.getStatus().toLowerCase(),
+                    existing.getIdempotencyKey()
+            );
+        }
 
         Wallet wallet =
                 walletService.getWallet(request.getWalletId());
@@ -75,23 +75,12 @@ public class RazorpayService {
                 request.getCurrency().toUpperCase();
 
         if (!wallet.getCurrency().equals(currency)) {
-            throw new RuntimeException(
-                    "Currency mismatch"
-            );
+            throw new RuntimeException("Currency mismatch");
         }
 
         BigDecimal amount =
                 request.getAmount()
                         .setScale(2, RoundingMode.HALF_UP);
-
-        /*
-         * The idempotency key is used as the business
-         * reference for the gateway order.
-         *
-         * We are not crediting the wallet here.
-         * Money is credited only after successful
-         * payment confirmation.
-         */
 
         String receipt =
                 "FIN-" +
@@ -106,7 +95,7 @@ public class RazorpayService {
                         currency,
                         receipt
                 );
-        
+
         GatewayTransaction transaction =
                 new GatewayTransaction();
 
@@ -131,19 +120,14 @@ public class RazorpayService {
                 request.getIdempotencyKey()
         );
     }
-    
+
     @Transactional
     public GatewayTransaction verifyPayment(
             String razorpayOrderId,
             String razorpayPaymentId,
             String razorpaySignature) {
 
-        /*
-         * Lock the gateway transaction.
-         *
-         * This prevents two concurrent verification requests
-         * from both crediting the wallet.
-         */
+        // Lock gateway transaction to prevent duplicate credits.
         GatewayTransaction transaction =
                 gatewayTransactionRepository
                         .findByGatewayOrderIdForUpdate(
@@ -154,24 +138,12 @@ public class RazorpayService {
                                         "Gateway order not found"
                                 ));
 
-        /*
-         * Idempotency.
-         *
-         * If the same payment is verified again after the
-         * transaction has already completed, return the
-         * existing transaction without crediting again.
-         */
+        // Idempotency: never credit an already completed payment.
         if ("COMPLETED".equals(transaction.getStatus())) {
             return transaction;
         }
 
-        /*
-         * Verify Razorpay HMAC signature.
-         *
-         * Signature is generated from:
-         *
-         * order_id + "|" + payment_id
-         */
+        // Verify Razorpay HMAC signature.
         boolean valid =
                 razorpayClient.verifyPaymentSignature(
                         transaction.getGatewayOrderId(),
@@ -185,9 +157,7 @@ public class RazorpayService {
             );
         }
 
-        /*
-         * Lock the actual FinCore wallet.
-         */
+        // Lock the wallet before modifying its balance.
         Wallet wallet =
                 walletService.getWalletForUpdate(
                         transaction.getWallet().getId()
@@ -195,9 +165,7 @@ public class RazorpayService {
 
         walletService.validateActive(wallet);
 
-        /*
-         * Validate currency.
-         */
+        // Validate currency.
         if (!wallet.getCurrency().equals(
                 transaction.getCurrency())) {
 
@@ -206,72 +174,36 @@ public class RazorpayService {
             );
         }
 
-        /*
-         * Credit wallet only after successful
-         * Razorpay signature verification.
-         */
+        // Credit wallet only after successful signature verification.
         walletService.credit(
                 wallet,
                 transaction.getAmount()
         );
 
-        /*
-         * Create gateway funding ledger entry.
-         */
+        // Create gateway funding ledger entry.
         LedgerEntry ledgerEntry =
                 new LedgerEntry();
 
         ledgerEntry.setWallet(wallet);
-
         ledgerEntry.setGatewayTransaction(transaction);
+        ledgerEntry.setEntryType(LedgerEntryType.CREDIT);
+        ledgerEntry.setAmount(transaction.getAmount());
+        ledgerEntry.setBalanceAfter(wallet.getBalance());
 
-        ledgerEntry.setEntryType(
-                LedgerEntryType.CREDIT
-        );
-
-        ledgerEntry.setAmount(
-                transaction.getAmount()
-        );
-
-        ledgerEntry.setBalanceAfter(
-                wallet.getBalance()
-        );
-
-        /*
-         * Save wallet.
-         */
+        // Save updated wallet.
         walletService.save(wallet);
 
-        /*
-         * Update gateway transaction.
-         */
-        transaction.setGatewayPaymentId(
-                razorpayPaymentId
-        );
-
-        transaction.setRazorpaySignature(
-                razorpaySignature
-        );
-
-        transaction.setStatus(
-                "COMPLETED"
-        );
-
-        transaction.setCompletedAt(
-                LocalDateTime.now()
-        );
+        // Update gateway transaction.
+        transaction.setGatewayPaymentId(razorpayPaymentId);
+        transaction.setRazorpaySignature(razorpaySignature);
+        transaction.setStatus("COMPLETED");
+        transaction.setCompletedAt(LocalDateTime.now());
 
         GatewayTransaction savedTransaction =
-                gatewayTransactionRepository.save(
-                        transaction
-                );
+                gatewayTransactionRepository.save(transaction);
 
-        /*
-         * Save ledger entry.
-         */
-        ledgerEntryRepository.save(
-                ledgerEntry
-        );
+        // Save ledger entry.
+        ledgerEntryRepository.save(ledgerEntry);
 
         return savedTransaction;
     }

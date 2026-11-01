@@ -18,3 +18,31 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Maven build output
+target/
+*.class
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

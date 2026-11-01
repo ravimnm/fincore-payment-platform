@@ -2,11 +2,15 @@ package com.fincore.backend.service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
+
+import org.springframework.data.domain.PageRequest;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fincore.backend.dto.PaymentHistoryItem;
 import com.fincore.backend.entity.LedgerEntry;
 import com.fincore.backend.entity.Payment;
 import com.fincore.backend.entity.Wallet;
@@ -17,13 +21,16 @@ import com.fincore.backend.repository.PaymentRepository;
 public class PaymentService {
 	private final PaymentRepository paymentRepository;
     private final WalletService walletService;
-
+    private final PaymentOutboxService paymentOutboxService;
+    
     public PaymentService(
             PaymentRepository paymentRepository,
-            WalletService walletService) {
-
+            WalletService walletService,
+            PaymentOutboxService paymentOutboxService
+    ) {
         this.paymentRepository = paymentRepository;
         this.walletService = walletService;
+        this.paymentOutboxService = paymentOutboxService;
     }
     
     @Transactional(readOnly = true)
@@ -44,6 +51,39 @@ public class PaymentService {
                         new RuntimeException("Payment not found"));
     }
     
+    // Payments sent or received by a wallet, newest first
+    @Transactional(readOnly = true)
+    public List<PaymentHistoryItem> getHistory(Long walletId, int limit) {
+
+        return paymentRepository
+            .findBySenderWalletIdOrReceiverWalletIdOrderByCreatedAtDesc(
+                walletId, walletId, PageRequest.of(0, limit))
+            .stream()
+            .map(p -> {
+                boolean sent =
+                    p.getSenderWallet().getId().equals(walletId);
+
+                Wallet other = sent
+                    ? p.getReceiverWallet()
+                    : p.getSenderWallet();
+
+                return new PaymentHistoryItem(
+                    p.getId(),
+                    p.getPaymentReference(),
+                    sent ? "SENT" : "RECEIVED",
+                    other.getId(),
+                    other.getUser().getDisplayName(),
+                    p.getAmount(),
+                    p.getCurrency(),
+                    p.getStatus(),
+                    p.getDescription(),
+                    p.getCreatedAt(),
+                    p.getCompletedAt()
+                );
+            })
+            .toList();
+    }
+
     @Transactional
     public Payment processPayment(Long senderWalletId, Long receiverWalletId, BigDecimal amount, String currency, String idempotencyKey, String description) {
     	validateRequest(senderWalletId,receiverWalletId,amount,currency,idempotencyKey);
@@ -182,14 +222,17 @@ public class PaymentService {
          * Because this method is @Transactional, all changes
          * participate in the same database transaction.
          */
-        walletService.save(senderWallet);
-        walletService.save(receiverWallet);
-
+        
         /*
          * Cascade persists the ledger entries because
          * Payment.ledgerEntries uses CascadeType.ALL.
          */
-        return paymentRepository.save(payment);
+        Payment savedPayment = paymentRepository.save(payment);
+
+	    // Persist the event in the same database transaction.
+	    paymentOutboxService.recordPaymentCompleted(savedPayment);
+	
+	    return savedPayment;
     }
     
 

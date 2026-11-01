@@ -8,25 +8,12 @@ The system models two payment flows: internal wallet-to-wallet transfers protect
 
 # Technology Stack
 
-## Backend
-
-* Java 21
-* Spring Boot 4
-* PostgreSQL
-
 ## Payment Gateway
 
 * Razorpay Test Mode
 * Razorpay Checkout
 * Razorpay Orders API
 * HMAC-SHA256 payment signature verification
-
-## Deployment & Infrastructure
-
-* Docker
-* GitHub Actions (CI/CD)
-* GitHub Container Registry
-* Render / Render PostgreSQL
 
 ---
 
@@ -239,7 +226,7 @@ Payment verification is performed server-side using the Razorpay secret.
 
 ---
 
-# Razorpay Load Testing (Local Benchmark)
+# Razorpay Load Testing
 
 Razorpay Test Mode was benchmarked separately from FinCore's internal wallet-to-wallet transfer benchmark.
 
@@ -275,20 +262,20 @@ The rate limiting occurred at the external Razorpay API rather than inside the F
 
 ### Results
 
-| Metric                    |              Result |
-| ------------------------- | -------------------: |
-| Scheduled iterations      |               1,000 |
-| Completed HTTP requests   |             **999** |
-| Dropped iterations        |               **1** |
-| Successful HTTP requests  |      **999 (100%)** |
-| HTTP failure rate         |              **0%** |
-| Average latency           |       **173.17 ms** |
-| Median latency            |       **140.08 ms** |
-| P90 latency               |       **217.95 ms** |
-| P95 latency               |       **256.87 ms** |
-| Maximum latency           |          **2.92 s** |
-| Throughput                | **~2 requests/sec** |
-| Maximum VUs used          |               **5** |
+| Metric                   |              Result |
+| ------------------------ | -------------------: |
+| Target order requests    |               1,000 |
+| Completed requests       |             **999** |
+| Dropped iterations       |               **1** |
+| Successful HTTP requests |      **999 (100%)** |
+| HTTP failures            |              **0%** |
+| Average latency          |       **173.17 ms** |
+| Median latency           |       **140.08 ms** |
+| P90 latency              |       **217.95 ms** |
+| P95 latency              |       **256.87 ms** |
+| Maximum latency          |          **2.92 s** |
+| Throughput               | **~2 requests/sec** |
+| Maximum VUs used         |               **5** |
 
 All application-level checks passed:
 
@@ -304,7 +291,6 @@ The final run produced:
 ```text
 999 / 999 successful HTTP requests
 0 / 999 HTTP failures
-(1,000 iterations scheduled, 1 dropped)
 ```
 
 ---
@@ -416,19 +402,19 @@ The benchmark exercises:
 
 Previously measured benchmark:
 
-| Metric                         |            Result |
-| ------------------------------- | -----------------: |
-| Maximum Concurrent VUs         |         **1,000** |
-| Authenticated Load-Test Users  |            **25** |
-| Total Requests                 |        **50,682** |
-| Successful Requests            | **50,682 (100%)** |
-| Failed Requests                |        **0 (0%)** |
-| Throughput                     |  **281.56 req/s** |
-| Average Latency                |        **1.74 s** |
-| Median Latency                 |        **1.26 s** |
-| P90 Latency                    |        **3.83 s** |
-| P95 Latency                    |        **5.59 s** |
-| Maximum Latency                |       **16.88 s** |
+| Metric                        |            Result |
+| ------------------------------ | -----------------: |
+| Maximum Concurrent VUs        |         **1,000** |
+| Authenticated Load-Test Users |            **25** |
+| Total Requests                |        **50,682** |
+| Successful Requests           | **50,682 (100%)** |
+| Failed Requests               |        **0 (0%)** |
+| Throughput                    |  **281.56 req/s** |
+| Average Latency               |        **1.74 s** |
+| Median Latency                |        **1.26 s** |
+| P90 Latency                   |        **3.83 s** |
+| P95 Latency                   |        **5.59 s** |
+| Maximum Latency               |       **16.88 s** |
 
 These results represent a local development benchmark and should not be interpreted as production capacity.
 
@@ -438,16 +424,16 @@ These results represent a local development benchmark and should not be interpre
 
 The Razorpay benchmark measures the external gateway order-creation path separately.
 
-| Metric                   |        Result |
-| ------------------------- | -------------: |
-| Scheduled Iterations     |     **1,000** |
-| Completed HTTP Requests  |       **999** |
-| HTTP Success Rate        |      **100%** |
-| HTTP Failure Rate        |        **0%** |
-| Average Latency          | **173.17 ms** |
-| P95 Latency              | **256.87 ms** |
-| Maximum Latency          |    **2.92 s** |
-| Controlled Rate          |   **2 req/s** |
+| Metric             |        Result |
+| ------------------- | -------------: |
+| Target Requests    |     **1,000** |
+| Completed Requests |       **999** |
+| HTTP Success Rate  |      **100%** |
+| HTTP Failure Rate  |        **0%** |
+| Average Latency    | **173.17 ms** |
+| P95 Latency        | **256.87 ms** |
+| Maximum Latency    |    **2.92 s** |
+| Controlled Rate    |   **2 req/s** |
 
 The gateway benchmark is intentionally separated from the internal payment benchmark because the external Razorpay API imposes its own rate limits and network characteristics.
 
@@ -483,122 +469,3 @@ The system therefore demonstrates both:
 
 * **transactional wallet-to-wallet payment processing**, and
 * **integration with an external payment gateway for wallet funding**.
-
----
-
-# ☁️ Production Deployment
-
-FinCore is deployed as a containerized Spring Boot backend using GitHub Actions and Render.
-
-## Deployment Pipeline
-
-```text
-GitHub
-   ↓
-GitHub Actions
-   ↓
-Maven Tests
-   ↓
-Build JAR
-   ↓
-Build Docker Image
-   ↓
-GitHub Container Registry
-   ↓
-Render
-   ↓
-FinCore Spring Boot API
-   ↓
-Render PostgreSQL
-```
-
-Every push to the `main` branch triggers the CI/CD workflow, which automatically:
-
-* Checks out the latest source code
-* Sets up Java 21
-* Runs the Maven test suite
-* Builds the Spring Boot JAR
-* Builds a Docker image
-* Publishes the image to GitHub Container Registry
-* Deploys the application through Render
-
-## Production Infrastructure
-
-The deployed environment uses:
-
-* **Render** — application hosting
-* **Render PostgreSQL** — production database
-* **Docker** — application containerization
-* **GitHub Actions** — CI/CD automation
-* **GitHub Container Registry** — Docker image registry
-* **Spring Boot 4 / Java 21** — application runtime
-
-Production configuration is supplied through environment variables rather than hard-coded credentials.
-
-Configured production secrets include:
-
-```text
-DB_URL
-DB_USERNAME
-DB_PASSWORD
-JWT_SECRET
-RAZORPAY_KEY_ID
-RAZORPAY_KEY_SECRET
-```
-
-This keeps database credentials, JWT signing secrets, and payment-gateway credentials outside the source repository.
-
----
-
-# 💳 Razorpay Integration & Test Interface
-
-FinCore includes a Razorpay payment-gateway integration for creating and verifying payment orders through the backend, as described above.
-
-To exercise this flow end-to-end, a small **Razorpay test interface** was also built. This is **not a complete FinCore frontend** — the main application is a backend/API system. The UI exists solely to drive and demonstrate the Razorpay payment flow (order creation, Checkout, and verification) against the deployed API.
-
-```text
-Razorpay Test UI
-       ↓
-FinCore REST API
-       ↓
-Payment Service
-       ↓
-Razorpay Gateway
-       ↓
-Razorpay Order
-```
-
-Authentication, authorization, payment validation, signature verification, wallet locking, and ledger persistence all remain on the server side, as documented above.
-
-The deployed system has been used to successfully exercise wallet creation, wallet-to-wallet transfers, and Razorpay order creation/verification against the production backend.
-
----
-
-# ⚡ Production Load Testing
-
-The deployed Razorpay order-creation endpoint (on Render) was also tested using Grafana k6, using the same controlled-rate approach as the local benchmark above.
-
-The test scheduled 1,000 iterations at a controlled rate of approximately 2 requests/second.
-
-**Results:**
-
-* 1,000 iterations scheduled
-* 999 HTTP requests completed
-* 1 dropped iteration
-* 0% HTTP failure rate (999/999 successful)
-* 100% application-level checks passed
-* Average latency: ~173 ms
-* P95 latency: ~257 ms
-* Maximum latency: ~2.92 s
-
-The test was deliberately rate-limited rather than aggressively saturating the endpoint, avoiding Razorpay's external API rate limits while measuring the deployed application's behavior.
-
----
-
-# 🌐 Live API
-
-**Production:** https://fincore-aeg6.onrender.com
-
-FinCore is primarily exposed as a REST API. The Razorpay test interface is provided only for demonstrating and testing the payment integration, not as a full application frontend.
-
-The deployment is continuously updated through the GitHub Actions pipeline whenever changes are pushed to `main`.

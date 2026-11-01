@@ -245,6 +245,16 @@ public class User {
         this.wallet = wallet;
     }
 
+    public String getDisplayName() {
+        String name = (firstName == null ? "" : firstName)
+                + " "
+                + (lastName == null ? "" : lastName);
+
+        name = name.trim();
+
+        return name.isEmpty() ? username : name;
+    }
+
     public void addRole(Role role) {
         roles.add(role);
     }

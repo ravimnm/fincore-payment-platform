@@ -90,6 +90,24 @@
              <groupId>org.springframework.boot</groupId>
              <artifactId>spring-boot-starter-oauth2-client</artifactId>
         </dependency>
+        
+        <!-- Redis: caching and distributed data access -->
+		<dependency>
+		    <groupId>org.springframework.boot</groupId>
+		    <artifactId>spring-boot-starter-data-redis</artifactId>
+		</dependency>
+		
+		<!-- Spring Cache -->
+		<dependency>
+		    <groupId>org.springframework.boot</groupId>
+		    <artifactId>spring-boot-starter-cache</artifactId>
+		</dependency>
+				
+		<!-- RabbitMQ: asynchronous messaging -->
+		<dependency>
+		    <groupId>org.springframework.boot</groupId>
+		    <artifactId>spring-boot-starter-amqp</artifactId>
+		</dependency>
 
     </dependencies>
 

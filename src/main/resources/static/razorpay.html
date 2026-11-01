@@ -153,11 +153,31 @@ function openCheckout(order, token) {
                     }
                 );
 
-            const result =
-                await verifyResponse.text();
+            const result = await verifyResponse.json();
 
             document.getElementById("result").textContent =
-                result;
+                JSON.stringify(result, null, 2);
+
+            if (result.fraud === true) {
+
+                alert(
+                    "⚠️ FRAUD DETECTED\n\n" +
+                    "Fraud Probability: " +
+                    (result.fraudProbability * 100).toFixed(2) +
+                    "%\n\n" +
+                    "Payment has been flagged by IVAR."
+                );
+
+            } else {
+
+                alert(
+                    "✅ PAYMENT APPROVED\n\n" +
+                    "Fraud Probability: " +
+                    (result.fraudProbability * 100).toFixed(2) +
+                    "%\n\n" +
+                    "IVAR did not detect fraud."
+                );
+            }
         }
     };
 

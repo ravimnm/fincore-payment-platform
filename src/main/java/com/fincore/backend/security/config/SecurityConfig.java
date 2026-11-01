@@ -1,7 +1,15 @@
+
 package com.fincore.backend.security.config;
+
+import java.util.List;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -10,18 +18,14 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import com.fincore.backend.security.filter.JwtFilter;
-import com.fincore.backend.security.oauth2.OAuth2LoginSuccessHandler;
 
 @Configuration
 public class SecurityConfig {
 
     private final JwtFilter jwtFilter;
-    private final OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler;
 
-    public SecurityConfig(JwtFilter jwtFilter, OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler) {
+    public SecurityConfig(JwtFilter jwtFilter) {
         this.jwtFilter = jwtFilter;
-        this.oAuth2LoginSuccessHandler = oAuth2LoginSuccessHandler;
-
     }
 
     @Bean
@@ -29,13 +33,59 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
+    // CORS Configuration
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+
+        CorsConfiguration configuration = new CorsConfiguration();
+
+        configuration.setAllowedOrigins(List.of(
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://localhost:4200",
+            "https://YOUR-ACTUAL-FRONTEND.vercel.app"
+        ));
+
+        configuration.setAllowedMethods(List.of(
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS"
+        ));
+
+        configuration.setAllowedHeaders(List.of("*"));
+
+        configuration.setExposedHeaders(List.of(
+            "Authorization"
+        ));
+
+        configuration.setAllowCredentials(true);
+
+        configuration.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source =
+            new UrlBasedCorsConfigurationSource();
+
+        source.registerCorsConfiguration("/**", configuration);
+
+        return source;
+    }
+
     @Bean
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http) throws Exception {
 
         http
+            // Enable CORS
+            .cors(cors -> cors.configurationSource(
+                corsConfigurationSource()
+            ))
+
             .csrf(csrf -> csrf.disable())
 
+            // Stateless JWT authentication
             .sessionManagement(session ->
                 session.sessionCreationPolicy(
                     SessionCreationPolicy.STATELESS
@@ -44,17 +94,14 @@ public class SecurityConfig {
 
             .authorizeHttpRequests(auth -> auth
 
+                // CORS preflight
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+
                 // Authentication
                 .requestMatchers(
                     "/auth/register",
                     "/auth/login",
                     "/razorpay.html"
-                ).permitAll()
-                                   
-                // OAuth2 endpoints
-                .requestMatchers(
-                    "/oauth2/**",
-                    "/login/oauth2/**"
                 ).permitAll()
 
                 // Super Admin
@@ -68,11 +115,11 @@ public class SecurityConfig {
                 .requestMatchers("/wallet/**")
                 .authenticated()
 
-                // Payment operations
+                // Payments
                 .requestMatchers("/payments/**")
                 .authenticated()
-                
-                // Razorpay test gateway
+
+                // Razorpay
                 .requestMatchers("/gateway/razorpay/**")
                 .authenticated()
 
@@ -83,11 +130,6 @@ public class SecurityConfig {
                 // Everything else
                 .anyRequest()
                 .authenticated()
-            )
-            
-            .oauth2Login(oauth2 ->
-                oauth2
-                    .successHandler(oAuth2LoginSuccessHandler)
             )
 
             .addFilterBefore(
