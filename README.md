@@ -4,13 +4,13 @@ FinCore is a backend for a wallet-based payment system, built with Java 21 and S
 
 The project concentrates on the parts of a payment backend that are hard to get right:
 
-- keeping balances consistent under concurrent requests (row-level pessimistic locks, `@Version`),
+- keeping balances consistent under concurrent requests (row-level pessimistic locks, `@Version`; the behavior under load is not yet fully validated, see [Concurrency testing status](#12-concurrency-testing-status)),
 - making retried requests safe (idempotency keys),
 - keeping money movement and its records in one database transaction,
 - crediting a wallet from an external gateway only after server-side signature verification,
 - publishing events reliably with a transactional outbox.
 
-> **Status:** a personal engineering project, developed and benchmarked on a local machine. It is not a production deployment, and this document makes no production-readiness claim. Where behavior is intended but not proven by tests, or exists in code but is not active, the text says so.
+> **Status:** a personal engineering project, developed and benchmarked on a local machine. It is not a production deployment, and this document makes no production-readiness claim. Where behavior is intended but not proven by tests, or exists in code but is not active, the text says so. **Concurrent financial integrity under load is not yet fully validated**; see [Concurrency testing status](#12-concurrency-testing-status).
 
 ---
 
@@ -27,25 +27,24 @@ The project concentrates on the parts of a payment backend that are hard to get 
 9. [Wallet-to-wallet payment processing](#9-wallet-to-wallet-payment-processing)
 10. [Payment idempotency](#10-payment-idempotency)
 11. [Transactions and concurrency control](#11-transactions-and-concurrency-control)
-12. [Ledger and financial consistency](#12-ledger-and-financial-consistency)
-13. [Transactional outbox and messaging](#13-transactional-outbox-and-messaging)
-14. [Razorpay integration and gateway transaction lifecycle](#14-razorpay-integration-and-gateway-transaction-lifecycle)
-15. [Security design](#15-security-design)
-16. [Database design](#16-database-design)
-17. [API reference](#17-api-reference)
-18. [Request and response examples](#18-request-and-response-examples)
+12. [Concurrency testing status](#12-concurrency-testing-status)
+13. [Ledger and financial consistency](#13-ledger-and-financial-consistency)
+14. [Transactional outbox and messaging](#14-transactional-outbox-and-messaging)
+15. [Razorpay integration and gateway transaction lifecycle](#15-razorpay-integration-and-gateway-transaction-lifecycle)
+16. [Security design](#16-security-design)
+17. [Database design](#17-database-design)
+18. [API reference](#18-api-reference)
 19. [Project structure](#19-project-structure)
 20. [Environment configuration](#20-environment-configuration)
 21. [Local development setup](#21-local-development-setup)
 22. [Running the application](#22-running-the-application)
 23. [Testing strategy](#23-testing-strategy)
-24. [Performance testing with Grafana k6](#24-performance-testing-with-grafana-k6)
-25. [Benchmark results](#25-benchmark-results)
-26. [Deployment architecture](#26-deployment-architecture)
-27. [Engineering trade-offs and limitations](#27-engineering-trade-offs-and-limitations)
-28. [Future improvements](#28-future-improvements)
-29. [License](#29-license)
-30. [Documentation notes](#30-documentation-notes)
+24. [Performance testing and benchmarks](#24-performance-testing-and-benchmarks)
+25. [Deployment architecture](#25-deployment-architecture)
+26. [Engineering trade-offs and limitations](#26-engineering-trade-offs-and-limitations)
+27. [Future improvements](#27-future-improvements)
+28. [License](#28-license)
+29. [Documentation notes](#29-documentation-notes)
 
 ---
 
@@ -58,8 +57,9 @@ Statements in this README were checked against the source code in this repositor
 | **Implemented** | Present in the code and reachable at runtime. |
 | **Present, not active** | Code exists but is disabled or not wired into the running application. |
 | **Unverified** | Reported historically (for example, in an earlier README) but not supported by an artifact in this repository. |
+| **Maintainer-reported** | Observations or figures supplied by the maintainer; no log or result file is committed. |
 
-A mechanism being **implemented** does not mean it is **proven**. The repository contains no automated concurrency or integration tests (see [Testing strategy](#23-testing-strategy)), so correctness under concurrency rests on code review and on load tests that did not record a financial-integrity check.
+A mechanism being **implemented** does not mean it is **proven**, and a mechanism described as **intended** states its design purpose, not an experimentally verified outcome. The repository contains no automated concurrency or integration tests (see [Testing strategy](#23-testing-strategy)), and the load tests did not record a financial-integrity check. Intermittent optimistic-lock conflicts have also been reported during load testing; see [Concurrency testing status](#12-concurrency-testing-status).
 
 ---
 
@@ -75,7 +75,7 @@ Wallet and payment systems fail in ways that ordinary CRUD applications do not:
 | A debit commits but its record or credit does not | Unreconcilable state |
 | A client claims "I paid" to an external gateway | Fraudulent wallet credit |
 
-FinCore's design goal is that money movement stays correct when requests are concurrent, duplicated, or fail midway. [Section 11](#11-transactions-and-concurrency-control) states exactly which of those properties are implemented and what evidence exists for each.
+FinCore's design goal is that money movement stays correct when requests are concurrent, duplicated, or fail midway. [Transactions and concurrency control](#11-transactions-and-concurrency-control) separates design intent from verified behavior, and [Concurrency testing status](#12-concurrency-testing-status) records what load testing has shown so far. Correctness under concurrent load is a goal that is **not yet fully validated**.
 
 ---
 
@@ -86,7 +86,7 @@ FinCore's design goal is that money movement stays correct when requests are con
 | Authentication | Registration with BCrypt-hashed passwords; username/password login issuing a signed JWT | Implemented |
 | Authorization | Role claims in the JWT (`ROLE_USER`, `ROLE_ADMIN`, `ROLE_SUPER_ADMIN`); URL-level rules; per-resource ownership checks in controllers | Implemented |
 | Wallets | One INR wallet per user, created at registration; random 12-digit wallet number; `ACTIVE` / `FROZEN` / `CLOSED` states; admin freeze and activate | Implemented |
-| Transfers | Wallet-to-wallet payments in a single transaction with ordered pessimistic locks | Implemented |
+| Transfers | Wallet-to-wallet payments in a single transaction with ordered pessimistic locks | Implemented; behavior under concurrent load not fully validated (see [status](#12-concurrency-testing-status)) |
 | Idempotency | Unique idempotency key on payments and on gateway orders | Implemented (see [limits](#10-payment-idempotency)) |
 | Ledger | `DEBIT` / `CREDIT` entries with `balance_after` per balance change from transfers and Razorpay funding | Implemented (no read API) |
 | Razorpay | Order creation, HMAC-SHA256 signature verification, wallet credit, gateway transaction record | Implemented (Test Mode) |
@@ -166,12 +166,12 @@ Layering follows the usual Spring convention: controllers validate input and enf
 | Decision | Reason | Where |
 |---|---|---|
 | All balance changes run inside one `@Transactional` service method | Debit, credit, payment row, ledger rows and outbox row commit or roll back together | `PaymentService.processPayment`, `RazorpayService.verifyPayment` |
-| `SELECT ... FOR UPDATE` on wallet rows (`PESSIMISTIC_WRITE`) | Serializes writers per wallet so read-check-write on a balance cannot interleave | `WalletRepository.findByIdForUpdate` |
-| Lock wallets in ascending ID order | A fixed global lock order prevents lock-cycle deadlocks between opposite transfers | `PaymentService.processPayment` |
-| `@Version` on `Wallet` | Optimistic detection as a second line of defense against an unlocked write path | `Wallet.version` |
+| `SELECT ... FOR UPDATE` on wallet rows (`PESSIMISTIC_WRITE`) | Intended to serialize writers per wallet so a read-check-write on a balance cannot interleave (optimistic-lock conflicts have still been observed; see [status](#12-concurrency-testing-status)) | `WalletRepository.findByIdForUpdate` |
+| Lock wallets in ascending ID order | Intended to prevent lock-cycle deadlocks between opposite transfers by using a fixed global lock order (not tested) | `PaymentService.processPayment` |
+| `@Version` on `Wallet` | Optimistic detection, intended as a second line of defense against an unlocked write path; conflicts have been observed in load tests (see [status](#12-concurrency-testing-status)) | `Wallet.version` |
 | Idempotency key stored on the payment row with a unique constraint declared on the entity | Retries return the stored result instead of moving money again | `Payment.idempotencyKey` |
 | Gateway transactions in their own table | External payment state is separate from internal transfers and can be reconciled against the provider | `GatewayTransaction` |
-| Lock the gateway transaction row before crediting | Two concurrent `verify` calls cannot both credit | `findByGatewayOrderIdForUpdate` |
+| Lock the gateway transaction row before crediting | Intended so that two concurrent `verify` calls cannot both credit (not load-tested) | `findByGatewayOrderIdForUpdate` |
 | Transactional outbox | The event is written in the same transaction as the payment, so a crash cannot commit a payment and lose its event | `PaymentOutboxService` |
 | Inbox table with `ON CONFLICT DO NOTHING` | At-least-once delivery becomes effectively-once processing for the consumer | `PaymentEventInboxRepository` |
 | `BigDecimal` / `NUMERIC(19,2)` for money | No floating-point rounding | entity column definitions |
@@ -312,20 +312,24 @@ flowchart TD
 |---|---|
 | No request fingerprint | A reused key with a *different* amount or receiver returns the original payment instead of being rejected. |
 | Replay status code | A replay returns `201 Created` like the first call; the response does not indicate it is a replay. |
-| Concurrent duplicates | The lookup is a read before the locks. Two simultaneous requests with the same new key can both pass it. The second then waits for the wallet locks, and its insert would violate the unique constraint on `payments.idempotency_key`, rolling back its whole transaction (including its debit). **This safety net exists only if the database actually has that unique constraint.** The schema is not versioned in this repository (see [Database design](#16-database-design)), and `ddl-auto=validate` does not check constraints. |
+| Concurrent duplicates | The lookup is a read before the locks. Two simultaneous requests with the same new key can both pass it. The second then waits for the wallet locks, and its insert would violate the unique constraint on `payments.idempotency_key`, rolling back its whole transaction (including its debit). **This safety net exists only if the database actually has that unique constraint.** The schema is not versioned in this repository (see [Database design](#17-database-design)), and `ddl-auto=validate` does not check constraints. |
 | Gateway orders | Same read-then-insert pattern. A concurrent duplicate could create an extra Razorpay order before the unique constraint rejects the local row; the extra order remains unused at Razorpay. |
 
 ---
 
 ## 11. Transactions and concurrency control
 
+> **Design intent, not a guarantee.** This section describes what the code is designed to do. It does not claim that optimistic-lock conflicts cannot occur: they have been observed during k6 testing. See [Concurrency testing status](#12-concurrency-testing-status).
+
 ### Why transactions are required
 
-A transfer changes four kinds of state: the sender balance, the receiver balance, the payment record, and the ledger/outbox rows. If any of them could commit without the others, the system would be inconsistent. `processPayment` is a single `@Transactional` method (default propagation), so Spring opens one database transaction, and an unchecked exception rolls all of it back. Isolation is not configured and therefore is the database default (PostgreSQL: `READ COMMITTED`).
+A transfer changes four kinds of state: the sender balance, the receiver balance, the payment record, and the ledger/outbox rows. If any of them could commit without the others, the system would be inconsistent. `processPayment` is a single `@Transactional` method (default propagation), so Spring opens one database transaction, and an unchecked exception rolls all of it back. Isolation is not configured and is therefore the database default (PostgreSQL: `READ COMMITTED`).
 
 ### Pessimistic locking
 
-`WalletRepository.findByIdForUpdate` is annotated `@Lock(LockModeType.PESSIMISTIC_WRITE)`, which Hibernate issues as `SELECT ... FOR UPDATE` on PostgreSQL. A second transaction that tries to lock the same wallet blocks until the first commits or rolls back. Because the balance is read after the lock is held, the check-then-update on the balance cannot interleave with another writer. `getWalletForUpdate` is `@Transactional` and joins the caller's transaction; the lock lasts until that transaction ends.
+`WalletRepository.findByIdForUpdate` is annotated `@Lock(LockModeType.PESSIMISTIC_WRITE)`, which Hibernate issues as `SELECT ... FOR UPDATE` on PostgreSQL. The intent is that a second transaction trying to lock the same wallet blocks until the first commits or rolls back, and that the balance is read only after the lock is held, so a check-then-update cannot interleave with another writer. `getWalletForUpdate` is `@Transactional` and joins the caller's transaction; the lock lasts until that transaction ends.
+
+Each balance-changing path in the code calls `getWalletForUpdate` before modifying a wallet: `PaymentService.processPayment`, `RazorpayService.verifyPayment`, and `WalletService.fundWallet`; freeze and activate lock before changing status. That is a statement about the code, not about observed runtime behavior.
 
 ### Deterministic lock order
 
@@ -339,31 +343,77 @@ if (senderWalletId < receiverWalletId) {
 }
 ```
 
-If A→B and B→A ran concurrently and each locked its own sender first, each would hold one lock and wait for the other: a deadlock. Always locking the lower ID first means both transactions request the same lock first, so one waits and the other proceeds; no cycle can form among transfers.
+If A→B and B→A ran concurrently and each locked its own sender first, each would hold one lock and wait for the other: a deadlock. Always locking the lower ID first is intended to make both transactions request the same lock first, so one waits and the other proceeds. By inspection no lock cycle can form among transfers, but this has not been tested.
 
-Other lock-taking paths do not invert this order: Razorpay `verify` locks the gateway-transaction row and then one wallet; freeze/activate lock one wallet. No path locks a wallet and then waits on a gateway-transaction row.
+The other lock-taking paths do not invert this order: Razorpay `verify` locks the gateway-transaction row and then one wallet; freeze/activate lock one wallet. No path locks a wallet and then waits on a gateway-transaction row.
 
 ### Optimistic versioning
 
-`Wallet.version` is a JPA `@Version` column. Hibernate adds `AND version = ?` to wallet updates and increments it, and throws an optimistic-lock exception if the row changed underneath. Every balance-changing path in the code takes the pessimistic lock first, so version conflicts are not expected in normal operation; the field is a safety net for any future path that forgets to lock.
+`Wallet.version` is a JPA `@Version` column. Hibernate adds `AND version = ?` to wallet updates, increments it, and throws an optimistic-lock exception if the row changed since it was read.
 
-### Implemented versus proven
+**Design intent:** because every balance-changing path locks first, version conflicts were not expected, and the field was meant as a safety net. **Observed:** conflicts have occurred in k6 runs (see [status](#12-concurrency-testing-status)), so that expectation has not held in at least some scenarios, and the cause is under investigation.
 
-| Property | Mechanism | Status |
-|---|---|---|
-| No lost balance update between concurrent transfers | Row locks, balance read under lock | Implemented. Not covered by an automated concurrency test. |
-| No deadlock between opposite-direction transfers | Ascending-ID lock order | Implemented by construction for the transfer path. Not tested. |
-| Debit, credit, payment, ledger and outbox are atomic | One `@Transactional` method | Implemented. |
-| Sequential retry does not repeat a transfer | Idempotency lookup | Implemented. |
-| Concurrent duplicate does not repeat a transfer | Unique constraint as backstop | Depends on a DB constraint that is not in the repository. |
-| Ledger always reconciles to balances | — | **Not guaranteed** (see [Ledger](#12-ledger-and-financial-consistency)). |
-| Behavior at scale | — | Not established; see [Benchmark results](#25-benchmark-results). |
+When a conflict is thrown it is not caught or retried. The transaction rolls back, and because no handler targets optimistic-lock exceptions, `GlobalExceptionHandler` returns them as `400 Bad Request` through its `RuntimeException` handler. This mapping follows from the source; it matches the HTTP 400 reported in the latest run.
 
-Not configured: lock-wait timeouts, retry on lock failure, or deadlock-specific handling. A lock timeout or a unique-constraint failure would surface as a generic `400 Bad Request` through the `RuntimeException` handler.
+### Design intent versus experimentally verified behavior
+
+| Property | Mechanism | Design intent | Experimentally verified |
+|---|---|---|---|
+| No lost balance update between concurrent transfers | Row locks, balance read under lock, `@Version` | Yes | **No.** Optimistic-lock conflicts observed under k6; no balance-conservation check has been run |
+| No deadlock between opposite-direction transfers | Ascending-ID lock order | Yes | No test exists |
+| Debit, credit, payment, ledger and outbox commit atomically | One `@Transactional` method | Yes | Not tested directly; relies on Spring/JPA transaction semantics |
+| Sequential retry does not repeat a transfer | Idempotency lookup | Yes | Not tested |
+| Concurrent duplicate does not repeat a transfer | Unique constraint as backstop | Yes | Not tested; depends on a DB constraint that is not in the repository |
+| Zero optimistic-lock conflicts | None | **Not claimed** | Contradicted by maintainer-reported runs |
+| Ledger always reconciles to balances | None | **Not guaranteed** (see [Ledger](#13-ledger-and-financial-consistency)) | Not tested |
+
+Not configured: lock-wait timeouts, retry on lock or version failure, or deadlock-specific handling. A lock timeout, an optimistic-lock failure or a unique-constraint failure would each surface as a generic `400 Bad Request`.
 
 ---
 
-## 12. Ledger and financial consistency
+## 12. Concurrency testing status
+
+> **Concurrent financial integrity is not yet fully validated.** Intermittent Hibernate optimistic-lock conflicts have occurred during k6 testing, including after pessimistic locks were introduced in the wallet update paths. The root cause is under investigation. This issue has **not** been resolved.
+
+### What has been observed
+
+| Observation | Source |
+|---|---|
+| Intermittent optimistic-lock conflicts during k6 load testing, including after pessimistic locking was added to wallet update paths | Maintainer-reported; no log or stack trace is committed |
+| Latest local run (10 VUs, 20 s): 1 of 1,585 requests failed with HTTP 400, reported as an optimistic-lock failure | Maintainer-reported; no result file committed. Details in [Performance testing](#24-performance-testing-and-benchmarks) |
+| The only committed result with failures (`payment-results.json`, 8 of 1,747 requests) does not record failure causes | Artifact in repo; the failures cannot be attributed to a specific error |
+
+### What is not established
+
+- The **root cause** of the conflicts. No explanation is documented here because none has been confirmed.
+- Whether **committed data is consistent** after concurrent runs. No run has checked that total balances are conserved, that each wallet's balance matches its ledger entries, or that each `201` response corresponds to exactly one payment row.
+- Whether the **historical zero-failure result** (50,682 requests) is representative. It is unverified and sits uneasily with the observations above.
+- That the locking design is correct. It is the intended design, not a verified one.
+
+### Expected effect of a conflict (design behavior, not independently tested)
+
+A conflicting request is rejected rather than committed: `@Version` makes the stale update fail, the transaction rolls back, and the client receives `400`. Because the rollback leaves no payment row for that idempotency key, a retry with the same key would run the transfer afresh. Rejection of a request does not by itself show that other committed data is correct.
+
+### Code inspection notes
+
+These are facts from the current source, listed to aid the investigation. They are **not** a diagnosis.
+
+- Wallet rows are written in four places: `PaymentService.processPayment` (relies on dirty checking of the locked entities; the current source has no explicit `save` of the wallets), `RazorpayService.verifyPayment` (explicit `save`), `WalletService.fundWallet`, and freeze/activate (dirty checking).
+- `PaymentController` calls `WalletService.getOwnedWallet`, a separate read-only transaction, before `processPayment`; that read does not take a lock and does not write.
+- No code retries on an optimistic-lock failure, and no handler distinguishes it from other errors.
+- `wallet-concurrency-audit.txt` is a snapshot of an earlier source version whose `processPayment` called `walletService.save` explicitly; the current source does not. The source version used for each historical run is not recorded.
+
+### Needed to close this item
+
+1. Capture the stack trace, entity and SQL for a failing request, with the server log around it.
+2. Reproduce at low VU counts and record whether failures depend on user count, wallet overlap or request mix.
+3. Record the code version, script, user and wallet counts and logging level for each run.
+4. Add a post-run reconciliation (balance conservation, ledger agreement, payment-row count versus `201` responses).
+5. Add automated concurrency tests (see [Future improvements](#27-future-improvements)).
+
+---
+
+## 13. Ledger and financial consistency
 
 `ledger_entries` rows are written in two situations:
 
@@ -384,7 +434,7 @@ Entries record `amount`, `entry_type`, the wallet, and `balance_after` taken fro
 
 ---
 
-## 13. Transactional outbox and messaging
+## 14. Transactional outbox and messaging
 
 ```mermaid
 flowchart LR
@@ -412,7 +462,7 @@ flowchart LR
 
 ---
 
-## 14. Razorpay integration and gateway transaction lifecycle
+## 15. Razorpay integration and gateway transaction lifecycle
 
 FinCore uses Razorpay **Test Mode** to fund wallets. The backend talks to `https://api.razorpay.com/v1` with HTTP Basic credentials from `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`. These stay on the server. The browser needs only the public key ID to open Checkout; the React client reads it from `VITE_RAZORPAY_KEY_ID`.
 
@@ -486,25 +536,24 @@ stateDiagram-v2
 
 ---
 
-## 15. Security design
+## 16. Security design
 
 | Control | Implementation |
 |---|---|
-| Password hashing | BCrypt |
-| Registration validation | Bean Validation (`@NotBlank`, `@Email`, size limits, password 8–100 chars); phone normalized and matched against `\+?\d{7,14}`; email lowercased; uniqueness checked for username, email and phone |
-| Authentication | Stateless JWT bearer tokens |
-| Authorization | URL rules by role plus ownership checks in controllers; `AccessDeniedException` returns `403` |
-| Data minimization | User search returns a masked phone (`•••••• 1234`) and never the email; query max 50 chars, max 10 results, LIKE wildcards escaped |
-| Gateway integrity | Server-side HMAC-SHA256 verification, constant-time compare, row lock, status check |
-| Secrets handling | JWT secret, Razorpay secret, Redis and RabbitMQ credentials are read from environment variables; `.env` is git-ignored |
-| CORS | Allow-list of `localhost:5173`, `:3000`, `:4200` and a placeholder Vercel origin (`https://YOUR-ACTUAL-FRONTEND.vercel.app`); credentials allowed |
-| Money handling | `BigDecimal`, `NUMERIC(19,2)`, exact paise conversion |
+| Passwords | BCrypt hashing; Bean Validation on registration |
+| Authentication | Stateless JWT bearer tokens (24 h lifetime) |
+| Authorization | URL rules by role plus ownership checks in controllers |
+| Gateway integrity | Server-side HMAC-SHA256 signature verification, constant-time compare, row lock and status check |
+| Data minimization | User search returns a masked phone and never the email |
+| Secrets | JWT, Razorpay, Redis and RabbitMQ secrets come from environment variables |
 
-**Known gaps** are collected in [Engineering trade-offs and limitations](#27-engineering-trade-offs-and-limitations). The main ones: development defaults for secrets and credentials in `application.properties`, direct funding enabled by default, no wallet-ownership check on the Razorpay endpoints, tokens that cannot be revoked, and the frontend keeping the JWT in `localStorage`.
+Main known gaps: development defaults for secrets and credentials in `application.properties`, direct funding enabled by default, no wallet-ownership check on the Razorpay endpoints, tokens that cannot be revoked, and a JWT stored in `localStorage` by the frontend.
+
+Full controls, the signature-verification explanation, the complete list of gaps and a suggested hardening order: **[docs/security-analysis.md](docs/security-analysis.md)**.
 
 ---
 
-## 16. Database design
+## 17. Database design
 
 PostgreSQL is the system of record. Hibernate runs with `spring.jpa.hibernate.ddl-auto=validate`: the application **does not create or migrate the schema**.
 
@@ -575,15 +624,15 @@ Two tables have no foreign keys and are not shown: `payment_outbox` (UUID primar
 - Constraints the application logic relies on: unique `payments.idempotency_key`, `payments.payment_reference`, `wallets.wallet_number`, `wallets.user_id`, and the unique constraints declared on `gateway_transactions`.
 - Seed rows in `roles` for `ROLE_USER`, `ROLE_ADMIN`, `ROLE_SUPER_ADMIN` (registration fails without `ROLE_USER`).
 
-Exact DDL is not provided here because it cannot be verified from the source alone; Hibernate's `validate` step will report mismatches at startup. Adding versioned migrations is listed under [Future improvements](#28-future-improvements).
+Exact DDL is not provided here because it cannot be verified from the source alone; Hibernate's `validate` step will report mismatches at startup. Adding versioned migrations is listed under [Future improvements](#27-future-improvements).
 
 ---
 
-## 17. API reference
+## 18. API reference
 
 Base URL (default): `http://localhost:8081`. There is no Swagger/OpenAPI dependency, so no generated API documentation URL exists. The Postman files in the repository (`postman_collection.json`, `postman/`) describe an older project (`/transactions`, `/dashboard/*`) and are **not** a reference for this API.
 
-Authenticated endpoints require `Authorization: Bearer <jwt>`.
+Authenticated endpoints require `Authorization: Bearer <jwt>`. Worked request and response examples (register, login, payments, history, Razorpay order and verify, errors) are in **[docs/api-examples.md](docs/api-examples.md)**.
 
 ### Authentication
 
@@ -663,219 +712,6 @@ All business failures map to `400`; the API does not use `404` or `409`. The res
 
 ---
 
-## 18. Request and response examples
-
-Values are illustrative.
-
-### Register and log in
-
-```bash
-curl -X POST http://localhost:8081/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "firstName": "Asha",
-    "lastName": "Rao",
-    "username": "asha",
-    "email": "asha@example.com",
-    "phone": "9876543210",
-    "password": "a-strong-password"
-  }'
-```
-
-`201 Created`, body (plain text):
-
-```text
-User Registered Successfully. Wallet created successfully.
-```
-
-```bash
-curl -X POST http://localhost:8081/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "asha", "password": "a-strong-password"}'
-```
-
-```json
-{
-  "token": "<jwt>",
-  "username": "asha",
-  "roles": ["ROLE_USER"]
-}
-```
-
-### Get my wallet
-
-```bash
-curl http://localhost:8081/wallet/me -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-{
-  "id": 3,
-  "userId": 3,
-  "walletNumber": "493017284650",
-  "balance": 1000.00,
-  "currency": "INR",
-  "status": "ACTIVE"
-}
-```
-
-### Search for a recipient
-
-```bash
-curl "http://localhost:8081/users/search?q=ravi" -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-[
-  {
-    "userId": 4,
-    "walletId": 4,
-    "walletNumber": "120945837712",
-    "displayName": "Ravi K",
-    "username": "ravi",
-    "maskedPhone": "•••••• 3210"
-  }
-]
-```
-
-### Create a payment
-
-```bash
-curl -X POST http://localhost:8081/payments \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "senderWalletId": 3,
-    "receiverWalletId": 4,
-    "amount": 250.00,
-    "currency": "INR",
-    "idempotencyKey": "pay-asha-ravi-0001",
-    "description": "Lunch"
-  }'
-```
-
-`201 Created`:
-
-```json
-{
-  "id": 17,
-  "paymentReference": "PAY-4F9C2A7B1D3E8A5C6B20",
-  "idempotencyKey": "pay-asha-ravi-0001",
-  "senderWalletId": 3,
-  "receiverWalletId": 4,
-  "amount": 250.00,
-  "currency": "INR",
-  "status": "COMPLETED",
-  "description": "Lunch",
-  "createdAt": "2026-11-01T18:30:00.123",
-  "completedAt": "2026-11-01T18:30:00.140"
-}
-```
-
-Repeating the identical request returns the same payment and moves no money.
-
-Validation rules (`PaymentRequest`): both wallet IDs required, `amount` ≥ `0.01`, `currency` exactly 3 characters, `idempotencyKey` required and ≤ 100 characters.
-
-### Payment history
-
-```bash
-curl "http://localhost:8081/payments/me?limit=20" -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-[
-  {
-    "id": 17,
-    "paymentReference": "PAY-4F9C2A7B1D3E8A5C6B20",
-    "direction": "SENT",
-    "counterpartyWalletId": 4,
-    "counterpartyName": "Ravi K",
-    "amount": 250.00,
-    "currency": "INR",
-    "status": "COMPLETED",
-    "description": "Lunch",
-    "createdAt": "2026-11-01T18:30:00.123",
-    "completedAt": "2026-11-01T18:30:00.140"
-  }
-]
-```
-
-### Create a Razorpay order
-
-```bash
-curl -X POST http://localhost:8081/gateway/razorpay/orders \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "walletId": 3,
-    "amount": 1000.00,
-    "currency": "INR",
-    "idempotencyKey": "rzp-asha-0001",
-    "description": "FinCore wallet funding"
-  }'
-```
-
-Validation: `amount` ≥ `1.00`; the wallet must be `ACTIVE` and in the same currency.
-
-`201 Created`:
-
-```json
-{
-  "gateway": "RAZORPAY",
-  "orderId": "order_xxxxxxxxxxxxxx",
-  "walletId": 3,
-  "amount": 1000.00,
-  "amountInPaise": 100000,
-  "currency": "INR",
-  "status": "created",
-  "idempotencyKey": "rzp-asha-0001"
-}
-```
-
-### Verify the payment
-
-After Checkout succeeds, send the three values Razorpay returns:
-
-```bash
-curl -X POST http://localhost:8081/gateway/razorpay/verify \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "razorpayOrderId": "order_xxxxxxxxxxxxxx",
-    "razorpayPaymentId": "pay_xxxxxxxxxxxxxx",
-    "razorpaySignature": "<signature-from-checkout>"
-  }'
-```
-
-`200 OK`:
-
-```json
-{
-  "status": "COMPLETED",
-  "gateway": "RAZORPAY",
-  "gatewayOrderId": "order_xxxxxxxxxxxxxx",
-  "gatewayPaymentId": "pay_xxxxxxxxxxxxxx",
-  "walletId": 3,
-  "amount": 1000.00
-}
-```
-
-An invalid signature returns `400` with `"message": "Invalid Razorpay payment signature"` and credits nothing.
-
-### Common errors
-
-```json
-{
-  "timestamp": "2026-11-01T18:31:10.512",
-  "status": 403,
-  "error": "Forbidden",
-  "message": "You do not have access to this wallet",
-  "path": "/payments"
-}
-```
-
----
-
 ## 19. Project structure
 
 ```text
@@ -886,9 +722,10 @@ An invalid signature returns `400` with `"message": "Invalid Razorpay payment si
 ├── .github/workflows/ci-cd.yml     # Build, test, push image to GHCR
 ├── payment-load.js                 # k6: internal transfer load test
 ├── razorpay-load-test.js           # k6: Razorpay order-creation test
-├── payment-results.json            # Committed k6 summary export (see §25)
+├── payment-results.json            # Committed k6 summary export (see docs/performance-testing.md)
 ├── fincore-frontend/               # React + Vite client
 │   └── src/{api.js, auth.jsx, wallet.jsx, pages/*}
+├── docs/                           # api-examples.md, performance-testing.md, security-analysis.md
 ├── src/main/java/com/fincore/backend/
 │   ├── FinCoreApplication.java
 │   ├── controller/                 # Auth, User, Wallet, Payment, Admin
@@ -986,7 +823,7 @@ Never commit real values for the JWT secret, database password, Razorpay secret,
    cd fincore-payment-platform
    ```
 
-2. **Create the database** named `fincore` and create the schema described in [Database design](#16-database-design). The application will not create tables.
+2. **Create the database** named `fincore` and create the schema described in [Database design](#17-database-design). The application will not create tables.
 
 3. **Seed roles** (registration needs `ROLE_USER`):
 
@@ -1063,120 +900,48 @@ All three are `@SpringBootTest` tests that need live PostgreSQL, Redis, RabbitMQ
 
 **CI** (`.github/workflows/ci-cd.yml`): on push to `main` (or manual dispatch) it runs `mvn clean verify`, builds the Docker image, and pushes it to GHCR. The workflow defines no service containers or environment variables, so whether those integration tests pass in CI was not verified here.
 
-**Load tests** with k6 are the only evidence about behavior under concurrency (next sections). They check HTTP status codes; they do not verify that balances and ledger sums remain consistent afterwards.
+**Load tests** with k6 are the only evidence about behavior under concurrency (see [Performance testing and benchmarks](#24-performance-testing-and-benchmarks)). They check HTTP status codes; they do not verify that balances and ledger sums remain consistent afterwards, and intermittent optimistic-lock failures have appeared in them ([Concurrency testing status](#12-concurrency-testing-status)).
 
 ---
 
-## 24. Performance testing with Grafana k6
+## 24. Performance testing and benchmarks
 
-Two scripts live in the repository root.
+> **Every figure below comes from a local development run. None is a production benchmark, and none establishes production capacity.** The runs differ in date, VU count, duration and configuration, so they are not a trend. Methodology, full per-run details and the evidence behind each figure: **[docs/performance-testing.md](docs/performance-testing.md)**.
 
-### `payment-load.js` — internal transfers
+Two [Grafana k6](https://k6.io) scripts are in the repository root: `payment-load.js` (internal transfers, ramp to 1,000 VUs over 180 s as committed) and `razorpay-load-test.js` (Razorpay order creation at 2 requests/s for 8 m 20 s). The two targets measure different things and are never combined.
 
-| Setting | Value |
-|---|---|
-| Target | `POST /payments` at `http://localhost:8081` |
-| Load shape | Ramping VUs: 0→100 (30 s), →350 (30 s), →700 (30 s), →1000 (30 s), hold 1000 (30 s), →0 (30 s); 3 minutes total |
-| Users | 25 pre-created users with 25 wallets; each VU maps to one sender, receiver rotates per iteration |
-| Request | `amount: 1.00`, `currency: INR`, unique idempotency key per iteration |
-| Check / threshold | `status is 201`; `http_req_failed` rate < 0.01 |
+### Latest run: 10 VUs, 20 seconds (local test run)
 
-### `razorpay-load-test.js` — order creation
-
-| Setting | Value |
-|---|---|
-| Target | `POST /gateway/razorpay/orders` at `http://localhost:8080` |
-| Load shape | `constant-arrival-rate`, 2 requests/s for 8 m 20 s, 5 pre-allocated and up to 10 VUs |
-| Request | `amount: 100.00`, unique idempotency key per iteration |
-| Checks | Status 201, `gateway == RAZORPAY`, `orderId` starts with `order_`, `amountInPaise == 10000` |
-| Thresholds | `http_req_failed` rate < 0.01; `http_req_duration` p95 < 5000 ms |
-
-### Running
-
-```bash
-k6 run payment-load.js
-k6 run razorpay-load-test.js
-k6 run --summary-export=results.json payment-load.js   # save a summary file
-```
-
-Before running, create the 25 load-test users and fund their wallets, then replace the embedded JWTs and wallet IDs in the script's `USERS` array with fresh values (tokens last 24 hours). The two scripts use different base URLs (`8081` and `8080`); adjust `BASE_URL` to match your backend port. Embedding tokens in the scripts is a weakness: keep real tokens out of version control, for example by reading them from `__ENV`.
-
-The Razorpay test calls the real Razorpay Test Mode API and is rate-limited by Razorpay.
-
----
-
-## 25. Benchmark results
-
-> **Local development measurements only.** They do not establish production capacity, and they are not comparable across the two tests. The hardware, PostgreSQL configuration and exact application build behind the historical figures were not recorded. The committed `application.properties` enables SQL logging and `TRACE`-level transaction and bind-parameter logging, which adds substantial overhead; whether it was active during the historical runs is unknown.
-
-The internal-transfer test and the Razorpay test measure different things and are reported separately.
-
-### A. Internal wallet-to-wallet transfers
-
-**A1. Committed result file — `payment-results.json`** (verified: parsed directly from the file; the structure matches a k6 `--summary-export`)
-
-| Metric | Value |
-|---|---:|
-| HTTP requests | 1,747 |
-| Request rate | 76.90 req/s |
-| Failed requests | 8 (0.46 %) |
-| Checks passed | 1,739 of 1,747 (99.54 %) |
-| Average latency | 463.36 ms |
-| Median | 375.00 ms |
-| P90 | 887.62 ms |
-| P95 | 1,075.48 ms |
-| Maximum | 4,042.04 ms |
-| VUs allocated / peak reached | 1,000 / 75 |
-| Implied duration | ≈ 22.7 s (1,747 ÷ 76.90) |
-
-Interpretation: the run covers about 23 seconds, far shorter than the script's 180 seconds, and its peak of 75 VUs is what the first ramp (0→100 over 30 s) reaches at that time. This is consistent with a run that was stopped early, but the file does not say so. The failure reasons were not recorded, and the file is not timestamped. It does **not** corroborate the historical figures below.
-
-**A2. Historical figures from the earlier README** (**unverified**: no result artifact for them is in the repository)
+Internal transfers (`POST /payments`). **Maintainer-reported; no result file is committed.** Script version, user and wallet counts, hardware and logging level were not supplied.
 
 | Metric | Reported |
 |---|---:|
-| Peak VUs | 1,000 |
-| Authenticated users | 25 |
-| Total requests | 50,682 |
-| Failed requests | 0 |
-| Throughput | 281.56 req/s |
-| Average / median | 1.74 s / 1.26 s |
-| P90 / P95 | 3.83 s / 5.59 s |
-| Maximum | 16.88 s |
+| Total requests | 1,585 |
+| Successful | 1,584 |
+| Failed | 1 (HTTP 400, reported as an optimistic-lock failure) |
+| Throughput | 79.095 req/s |
+| Average latency | 124.1 ms |
+| P95 latency | 254.85 ms |
 
-The figures are internally consistent with the script (50,682 ÷ 281.56 ≈ 180 s, equal to its 6 × 30 s stages), and the earlier README attributes them to the 1,000-VU, 25-user test. The raw k6 output is not stored, so they cannot be independently confirmed from this repository. The zero-failure result also conflicts with the 0.46 % failure rate in the committed file, which may come from a different, interrupted run.
+### All runs on record
 
-**How to read the latency.** Twenty-five wallets receive up to 1,000 concurrent virtual users, so requests queue on per-wallet row locks, and the HikariCP pool is capped at 50 connections. Multi-second latency at 1,000 VUs is therefore expected queuing behavior, not a measure of per-request cost. This is an inference from the design; contention was not measured.
+| Run | Date | Target | VUs | Duration | Requests | Failures | Avg / P95 | Evidence |
+|---|---|---|---|---|---:|---|---|---|
+| A | Unrecorded (first reported 2026-08-10) | `/payments` | 1,000 peak | ≈ 180 s | 50,682 | 0 (reported) | 1.74 s / 5.59 s | Historical, unverified |
+| B | Unrecorded (first reported 2026-08-24) | Razorpay orders | 5 | 500 s | 999 | 0 (reported) | 173.17 ms / 256.87 ms | Historical, unverified |
+| C | Unrecorded (committed 2026-11-01) | `/payments` | 75 peak | ≈ 22.7 s | 1,747 | 8, cause unknown | 463.36 ms / 1,075.48 ms | Artifact: `payment-results.json` |
+| D | Unrecorded (reported 2026-11-01) | `/payments` | 10 | 20 s | 1,585 | 1 (HTTP 400, optimistic lock) | 124.1 ms / 254.85 ms | Maintainer-reported |
 
-**What the test does not show.** The scripts check status codes only. No run recorded that total balances were conserved or that ledger sums matched balances afterwards, so the test does not by itself demonstrate absence of lost updates.
+Reading these correctly:
 
-### B. Razorpay order creation (external API)
-
-All figures below are **unverified**: neither a result file nor the script for the 20-VU experiment is in the repository.
-
-| Metric | Reported |
-|---|---:|
-| Arrival rate | 2 requests/s for 8 m 20 s |
-| Completed / dropped iterations | 999 / 1 |
-| HTTP failures | 0 |
-| Average / median | 173.17 ms / 140.08 ms |
-| P90 / P95 | 217.95 ms / 256.87 ms |
-| Maximum | 2.92 s |
-| VUs used | 5 |
-
-Consistency with the script: 2 req/s × 500 s = 1,000 scheduled iterations (999 completed + 1 dropped), with 5 pre-allocated VUs.
-
-The earlier README also reports that an experiment with 20 VUs and 1,000 order requests produced 63 successes and 937 `429 Too Many Requests` responses from Razorpay Test Mode. That experiment is not reproducible from the committed scripts. It illustrates that an external dependency's rate limit, not the application, can cap end-to-end throughput.
-
-These latencies describe the order-creation path (one outbound HTTPS call to Razorpay plus one insert). The reported rate is the configured arrival rate, not a measured capacity. `verify` (the credit path) was not benchmarked separately.
-
-### Reproducing and extending
-
-To produce verifiable results, save the k6 summary (`--summary-export`) alongside the commit, record hardware, PostgreSQL settings and logging level, and add a post-run assertion that the sum of wallet balances is unchanged and that every wallet's balance equals its ledger trail.
+- Run D's lower latency reflects a far lighter load than Runs A and C; it says nothing about behavior at 1,000 VUs.
+- Run B measures the external Razorpay API and its rate limit, not FinCore's transfer path.
+- None of the runs checked that balances and ledger totals stayed consistent, so none demonstrates the absence of lost updates. The optimistic-lock failure reported in Run D (Run C's failures have no recorded cause), and the [open concurrency issue](#12-concurrency-testing-status), mean the historical zero-failure figure in Run A should be treated with caution.
+- The committed `application.properties` enables SQL and `TRACE` logging and caps the connection pool at 50; whether this applied to any run is unknown.
 
 ---
 
-## 26. Deployment architecture
+## 25. Deployment architecture
 
 What the repository supports:
 
@@ -1193,7 +958,7 @@ A deployment needs PostgreSQL with the schema applied, Redis, RabbitMQ, and the 
 
 ---
 
-## 27. Engineering trade-offs and limitations
+## 26. Engineering trade-offs and limitations
 
 **Configuration and secrets**
 
@@ -1209,6 +974,7 @@ A deployment needs PostgreSQL with the schema applied, Redis, RabbitMQ, and the 
 
 | Issue | Detail |
 |---|---|
+| Concurrency | Intermittent optimistic-lock conflicts observed in k6 runs, including after pessimistic locks were added; root cause under investigation; concurrent financial integrity not fully validated (see [status](#12-concurrency-testing-status)). |
 | Idempotency semantics | No request fingerprint; replays return `201`; concurrent-duplicate safety depends on an unversioned DB constraint. |
 | Ledger | Not a full double-entry system; direct funding bypasses it; no reconciliation; "immutable" is by convention. |
 | Gateway | No webhook, no `FAILED`/expired state, no reconciliation with Razorpay; a missed `/verify` call means no credit. |
@@ -1219,13 +985,7 @@ A deployment needs PostgreSQL with the schema applied, Redis, RabbitMQ, and the 
 
 **Security**
 
-| Issue | Detail |
-|---|---|
-| Razorpay endpoints | `/orders` and `/verify` require authentication but do not check that the caller owns the wallet or gateway transaction. |
-| Token handling | JWTs cannot be revoked and carry roles; account status is checked only at login; the React client stores the JWT in `localStorage`. |
-| Rate limiting | The filter exists but is disabled; it is also an in-memory, per-instance, never-resetting counter, so it would need rework before use. |
-| OAuth2 | Handler code is present but not wired; if enabled, it returns the JWT in the response body and its own comments flag that as development-only. |
-| User-search cache | Results are cached for 5 minutes, so a frozen or changed wallet can appear stale. |
+See [docs/security-analysis.md](docs/security-analysis.md) for the full list. Highlights: no wallet-ownership check on the Razorpay endpoints; JWTs cannot be revoked and the frontend stores one in `localStorage`; the rate-limit filter and OAuth2 handler are present but not active.
 
 **Messaging**
 
@@ -1239,15 +999,15 @@ A deployment needs PostgreSQL with the schema applied, Redis, RabbitMQ, and the 
 | Issue | Detail |
 |---|---|
 | Coverage | Three integration smoke tests; nothing exercises transfer, idempotency, locking or signature logic. |
-| Benchmarks | Local only; result artifacts for the headline figures are not committed; no integrity assertions. |
+| Benchmarks | Local only; result artifacts for most figures are not committed; runs differ in configuration and are not comparable; no integrity assertions. |
 
 ---
 
-## 28. Future improvements
+## 27. Future improvements
 
 Ordered roughly by how directly they close the gaps above.
 
-1. **Concurrency and integrity tests.** Add Testcontainers-based tests that run many parallel opposite-direction transfers and duplicate-key requests, then assert conserved totals and ledger/balance agreement.
+1. **Diagnose the optimistic-lock conflicts, then add concurrency and integrity tests.** First capture and reproduce a failing request (see [status](#12-concurrency-testing-status)). Then add Testcontainers-based tests that run many parallel opposite-direction transfers and duplicate-key requests, then assert conserved totals and ledger/balance agreement.
 2. **Versioned schema.** Add Flyway or Liquibase migrations (including enum types, constraints and role seed data) and make the idempotency constraint explicit.
 3. **Safer defaults.** Remove default secrets and credentials, default `dev-funding-enabled` to `false`, turn off SQL/TRACE logging outside a dev profile, and move load-test tokens to environment variables.
 4. **Razorpay hardening.** Enforce wallet ownership on both endpoints, add a webhook and reconciliation job, model `FAILED`/expired states, and set client timeouts.
@@ -1260,13 +1020,13 @@ Ordered roughly by how directly they close the gaps above.
 
 ---
 
-## 29. License
+## 28. License
 
 No `LICENSE` file is present in the repository. Until the owner adds one, the code is not licensed for reuse.
 
 ---
 
-## 30. Documentation notes
+## 29. Documentation notes
 
 An earlier, longer version of this README (about 1,450 lines) is preserved in git history at commit `09604fc`. The `README.md` at the previous `HEAD` was a shorter, Razorpay-focused version. This version supersedes both and differs from the older text in these ways:
 
@@ -1276,3 +1036,4 @@ An earlier, longer version of this README (about 1,450 lines) is preserved in gi
 - The Razorpay public key reaches the frontend through `VITE_RAZORPAY_KEY_ID`, not from a backend endpoint.
 - Redis caching, the transactional outbox, RabbitMQ messaging, the admin API and the React client are documented here and were absent from the shorter README.
 - Benchmark figures are labelled by how well the repository supports them.
+- This revision adds the [Concurrency testing status](#12-concurrency-testing-status) section, reports the latest 10-VU / 20 s run as maintainer-reported, and moves API examples, performance methodology and extended security analysis into `docs/`. The optimistic-lock observations and the 10-VU / 20 s figures come from the maintainer and are not backed by a committed log or result file.
